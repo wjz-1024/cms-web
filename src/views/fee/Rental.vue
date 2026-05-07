@@ -219,34 +219,50 @@
           </el-col>
         </el-row>
         
-        <el-divider content-position="left">
-          费用计划预览
-          <el-button type="primary" size="small" @click="generateModifyPreview" style="margin-left: 20px">生成预览</el-button>
-        </el-divider>
+        <el-divider content-position="left">费用计划列表</el-divider>
         
         <el-table :data="modifyPreviewBills" border stripe max-height="300" v-if="modifyPreviewBills.length > 0" style="width: 100%">
           <el-table-column prop="feeType" label="费用类型" width="100">
             <template #default="{ row }">{{ feeTypeMap[row.feeType] }}</template>
           </el-table-column>
-          <el-table-column prop="year" label="年份" width="80" />
           <el-table-column prop="period" label="收费周期" width="140" />
-          <el-table-column label="应收日期" width="120">
+          <el-table-column label="应收日期" width="140">
             <template #default="{ row }">
-              <el-date-picker v-model="row.dueDate" type="date" size="small" style="width: 110px" value-format="YYYY-MM-DD" />
+              <el-date-picker 
+                v-model="row.dueDate" 
+                type="date" 
+                size="small" 
+                style="width: 130px" 
+                value-format="YYYY-MM-DD" 
+                :disabled="row.status === 1"
+              />
             </template>
           </el-table-column>
           <el-table-column label="应收金额 (元)" width="120">
             <template #default="{ row }">
-              <el-input v-model="row.dueAmount" type="number" size="small" style="width: 110px" />
+              <el-input 
+                v-model="row.dueAmount" 
+                type="number" 
+                size="small" 
+                style="width: 110px"
+                :disabled="row.status === 1"
+              />
             </template>
           </el-table-column>
-          <el-table-column prop="note" label="备注">
+          <el-table-column label="状态" width="80">
             <template #default="{ row }">
-              <el-input v-model="row.note" size="small" />
+              <el-tag :type="row.status === 1 ? 'success' : (row.status === 2 ? 'danger' : 'info')" size="small">
+                {{ row.status === 1 ? '已收' : (row.status === 2 ? '逾期' : '待收') }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="备注">
+            <template #default="{ row }">
+              <el-input v-model="row.remark" size="small" :disabled="row.status === 1" />
             </template>
           </el-table-column>
         </el-table>
-        <el-empty v-else description="请点击'生成预览'查看费用计划" :image-size="80" />
+        <el-empty v-else description="暂无费用计划" :image-size="80" />
       </el-form>
       <template #footer>
         <el-button @click="modifyDialogVisible = false">取消</el-button>
@@ -260,7 +276,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getRentals, getRental, terminateRental, modifyRental, getDictionaryByType, exportRentals } from '@/api'
+import { getRentals, getRental, terminateRental, modifyRental, getDictionaryByType, exportRentals, batchUpdateBills, updateRentalInfo } from '@/api'
 import { formatDate, formatMoney } from '@/utils/format'
 
 const router = useRouter()
@@ -394,7 +410,23 @@ const handleModify = async (row) => {
     }
     calcModifyRent()
     calcModifyProperty()
-    modifyPreviewBills.value = []
+    
+    if (data.bills && data.bills.length > 0) {
+      modifyPreviewBills.value = data.bills
+        .filter(b => b.status !== 3)
+        .map(bill => ({
+          id: bill.id,
+          feeType: bill.feeType,
+          status: bill.status,
+          period: formatDate(bill.periodStart) + ' ~ ' + formatDate(bill.periodEnd),
+          dueDate: formatDate(bill.dueDate),
+          dueAmount: bill.dueAmount,
+          remark: bill.remark || ''
+        }))
+    } else {
+      modifyPreviewBills.value = []
+    }
+    
     modifyDialogVisible.value = true
   } catch (error) {
     console.error(error)
@@ -555,21 +587,34 @@ const generateModifyPreview = () => {
 }
 
 const confirmModify = async () => {
-  if (modifyPreviewBills.value.length === 0) {
-    ElMessage.warning('请先生成费用计划预览')
-    return
-  }
-  ElMessageBox.confirm('确认修改后，未收取的费用将按新条款重新生成，原未收取的作废。是否继续？', '提示', { type: 'warning' }).then(async () => {
+  const unpaidBills = modifyPreviewBills.value.filter(b => b.status !== 1)
+  
+  ElMessageBox.confirm('确认保存修改？将更新出租信息和未收费用计划。', '提示', { type: 'warning' }).then(async () => {
     try {
-      await modifyRental(currentRentalId.value, {
-        ...modifyForm.value,
-        bills: modifyPreviewBills.value
+      await updateRentalInfo(currentRentalId.value, {
+        rentTotal: modifyForm.value.rentTotal,
+        rentCycle: modifyForm.value.rentCycle,
+        rentDeposit: modifyForm.value.rentDeposit,
+        rentFirstBillDate: modifyForm.value.rentFirstBillDate,
+        propertyFeeTotal: modifyForm.value.propertyFeeTotal,
+        propertyFeeCycle: modifyForm.value.propertyFeeCycle,
+        propertyFeeDeposit: modifyForm.value.propertyFeeDeposit,
+        propertyFeeFirstBillDate: modifyForm.value.propertyFeeFirstBillDate,
+        propertyFeePerSqm: modifyForm.value.propertyFeePerSqm,
+        note: modifyForm.value.note,
+        endDate: modifyForm.value.endDate
       })
-      ElMessage.success('修改成功')
+      
+      if (unpaidBills.length > 0) {
+        await batchUpdateBills({ bills: unpaidBills })
+      }
+      
+      ElMessage.success('保存成功')
       modifyDialogVisible.value = false
       fetchData()
     } catch (error) {
       console.error(error)
+      ElMessage.error('保存失败')
     }
   })
 }
